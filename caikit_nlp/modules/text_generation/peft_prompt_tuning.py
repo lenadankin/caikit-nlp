@@ -33,7 +33,7 @@ from peft import (
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, default_data_collator
+from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, default_data_collator
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.optimization import get_linear_schedule_with_warmup
 import numpy as np
@@ -590,6 +590,14 @@ class PeftPromptTuning(ModuleBase):
                 # get the PEFT causal LM model
                 model = PeftModel.from_pretrained(base_model, model_config)
                 cls.convert_peft_model_to_type(device, model, torch_dtype)
+            elif peft_config.task_type == "SEQ_2_SEQ_LM":
+                base_model = AutoModelForSeq2SeqLM.from_pretrained(
+                    peft_config.base_model_name_or_path
+                )
+                # get the PEFT seq 2 seq model
+                model = PeftModel.from_pretrained(base_model, model_config)
+                cls.convert_peft_model_to_type(device, model, torch_dtype)
+
             else:
                 # TODO: Handle other model types
                 error(

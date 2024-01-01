@@ -19,6 +19,7 @@ from utils import (
     print_colored,
     string_to_float,
 )
+from sklearn.metrics import classification_report, confusion_matrix
 
 # Local
 from caikit_nlp.toolkit.verbalizer_utils import render_verbalizer
@@ -102,6 +103,7 @@ def get_model_preds_and_references(
         Tuple(List)
             Tuple of 2 lists; the model predictions and the expected output sequences.
     """
+    import torch
     model_preds = []
     targets = []
 
@@ -113,6 +115,7 @@ def get_model_preds_and_references(
             max_new_tokens=max_new_tokens,
             truncate_input_tokens=truncate_input_tokens,
         ).generated_text
+        torch.cuda.empty_cache()
         parse_pred_text = raw_model_text.split(datum.input)[-1].strip()
         model_preds.append(parse_pred_text)
         targets.append(datum.output)
@@ -155,6 +158,43 @@ def export_model_preds(preds_file, predictions, validation_stream, verbalizer):
         json.dump(pred_objs, jfile, indent=4, sort_keys=True)
 
 
+def eval(model, dataset, max_new_tokens, truncate_input_tokens, preds_file=None, tgis=False):
+    print_colored("Grabbing validation data...")
+    dataset_info = SUPPORTED_DATASETS[dataset]
+    validation_stream = dataset_info.dataset_loader()[2]
+    if validation_stream is None:
+        raise ValueError(
+            "Selected dataset does not have a validation dataset available!"
+        )
+
+    # Run the data through the model; save the predictions & references
+    print_colored("Getting model predictions...")
+    predictions, references = get_model_preds_and_references(
+        model, validation_stream, max_new_tokens, truncate_input_tokens
+    )
+
+    if preds_file:
+        print_colored(
+            "Exporting model preds, source, verbalized source, and ground truth targets to {}".format(
+                preds_file
+            )
+        )
+        export_model_preds(
+            preds_file,
+            predictions,
+            validation_stream,
+            getattr(model, "verbalizer", None),
+        )
+
+    res = classification_report(y_true=references, y_pred=predictions)
+    print(res)
+    cm = confusion_matrix(y_true=references, y_pred=predictions)
+    print(cm)
+    if tgis:
+        print_colored("Killing containerized TGIS instance...")
+        kill_tgis_container_if_exists()
+
+
 if __name__ == "__main__":
     configure_random_seed_and_logging()
     args = parse_args()
@@ -164,40 +204,5 @@ if __name__ == "__main__":
     # Load the model; this can be a local model, or a distributed TGIS instance
     print_colored("Loading the model...")
     model = load_model(args.tgis, str(args.model_path))
-    # Load the validation stream with marked target sequences
-    print_colored("Grabbing validation data...")
-    dataset_info = SUPPORTED_DATASETS[args.dataset]
-    validation_stream = dataset_info.dataset_loader()[1]
-    if validation_stream is None:
-        raise ValueError(
-            "Selected dataset does not have a validation dataset available!"
-        )
 
-    # Run the data through the model; save the predictions & references
-    print_colored("Getting model predictions...")
-    predictions, references = get_model_preds_and_references(
-        model, validation_stream, args.max_new_tokens, args.truncate_input_tokens
-    )
-    print_colored(
-        "Exporting model preds, source, verbalized source, and ground truth targets to {}".format(
-            args.preds_file
-        )
-    )
-    export_model_preds(
-        args.preds_file,
-        predictions,
-        validation_stream,
-        getattr(model, "verbalizer", None),
-    )
-
-    for metric_func in metric_funcs:
-        metric_res = metric_func(predictions=predictions, references=references)
-        print_colored(metric_res)
-    # If we started a TGIS instance, kill it; otherwise, leave our container alone.
-    # TODO: This will still looks for containers to kill, even if you're running TGIS
-    # outside of a container through text-generation-server directly. For now, we are
-    # always running TGIS in a container, so it's ok; the worst that will happen is
-    # you'll kill somebody else's container.
-    if args.tgis:
-        print_colored("Killing containerized TGIS instance...")
-        kill_tgis_container_if_exists()
+    eval(model, args.dataset, args.max_new_tokens, args.truncate_input_tokens, args.preds_file, args.tgis)

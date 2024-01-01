@@ -28,6 +28,7 @@ from utils import (
     configure_random_seed_and_logging,
     print_colored,
 )
+from evaluate_model import eval
 import datasets
 
 # First Party
@@ -415,5 +416,7 @@ if __name__ == "__main__":
         accumulate_steps=args.accumulate_steps,
         torch_dtype=args.torch_dtype,
     )
+
+    eval(model=model, dataset=args.dataset, max_new_tokens=20, truncate_input_tokens=256, preds_file=None)
     model.save(args.output_dir, save_base_model=not args.prompt_only)
     print_colored("[Training Complete]")

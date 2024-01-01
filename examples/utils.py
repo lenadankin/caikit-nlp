@@ -10,18 +10,20 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 # Standard
 from collections import namedtuple
+import json
 from shutil import which
 from typing import Any, Callable, Tuple
 import math
 import random
-
+from functools import partial
 # Third Party
 import datasets
 import evaluate
 import numpy as np
 import torch
 import transformers
-
+import pandas as pd
+import ast
 # First Party
 from caikit_tgis_backend import TGISBackend
 import alog
@@ -260,6 +262,196 @@ def load_billsum_dataset() -> Tuple[caikit.core.data_model.DataStream]:
     return (train_stream, validation_stream, test_stream)
 
 
+def load_dataset_lmu_from_sample_step(train_csv, test_csv, class_name):
+    to_generation_fmt = lambda x: GenerationTrainRecord(
+        input=x["input"], output=x["output"]
+    )
+
+    def load_csv_to_json(csv_file):
+        df = pd.read_csv(csv_file)
+        df = df.rename(columns={"text": "input", "label": "output"})
+        df["output"] = df["output"].apply(lambda x: "yes" if class_name in ast.literal_eval(x) else "no")
+        return ast.literal_eval(df.to_json(orient='records'))
+
+    dataset = {}
+    dataset["train"] = load_csv_to_json(train_csv)
+    dataset["test"] = load_csv_to_json(test_csv)
+
+    build_stream = lambda split: caikit.core.data_model.DataStream.from_iterable(
+        [to_generation_fmt(datum) for datum in dataset[split]]
+    )
+    train_stream = build_stream("train")
+    validation_stream = build_stream("train")
+    test_stream = build_stream("test")
+    print_colored(
+        "Warning: using train stream as validation; 20_newsgroup has no validation set!"
+    )
+
+    return (train_stream, validation_stream, test_stream)
+
+
+
+def load_dataset_lmu(train_json, test_csv, class_name):
+    to_generation_fmt = lambda x: GenerationTrainRecord(
+        input=x["input"], output=x["output"]
+    )
+
+    dataset = {}
+    with open(train_json) as f_train:
+        dataset["train"] = json.load(f_train)
+    dataset["test"] = pd.read_csv(test_csv)
+    dataset["test"] = dataset["test"].rename(columns={"text":"input"})
+    dataset["test"]["output"] = dataset["test"]["gold_label"].apply(lambda x: "yes" if class_name in ast.literal_eval(x) else "no")
+    dataset["test"] = ast.literal_eval(dataset["test"].to_json(orient='records'))
+    build_stream = lambda split: caikit.core.data_model.DataStream.from_iterable(
+        [to_generation_fmt(datum) for datum in dataset[split]]
+    )
+    train_stream = build_stream("train")
+    validation_stream = build_stream("train")
+    test_stream = build_stream("test")
+    print_colored(
+        "Warning: using train stream as validation; 20_newsgroup has no validation set!"
+    )
+
+    return (train_stream, validation_stream, test_stream)
+
+
+def load_20_newsgroups(sample_size=None,
+    get_test_set_as_eval=False,
+) -> Tuple[caikit.core.data_model.DataStream]:
+    """Load the ought/raft twitter complaints dataset.
+
+    Returns:
+        Tuple(caikit.core.data_model.DataStream)
+            DataStreams of GenerationTrainRecords to be leveraged for training, validation,
+            and testing, respectively.
+    """
+    map_labels = {
+        'alt.atheism': 'atheism',
+        'comp.graphics': 'computer graphics',
+        'comp.os.ms-windows.misc': 'microsoft windows',
+        'comp.sys.ibm.pc.hardware': 'pc hardware',
+        'comp.sys.mac.hardware': 'mac hardware',
+        'comp.windows.x': 'windows x',
+        'misc.forsale': 'for sale',
+        'rec.autos': 'cars',
+        'rec.motorcycles': 'motorcycles',
+        'rec.sport.baseball': 'baseball',
+        'rec.sport.hockey': 'hockey',
+        'sci.crypt': 'cryptography',
+        'sci.electronics': 'electronics',
+        'sci.med': 'medicine',
+        'sci.space': 'space',
+        'soc.religion.christian': 'christianity',
+        'talk.politics.guns': 'guns',
+        'talk.politics.mideast': 'middle east',
+        'talk.politics.misc': 'politics',
+        'talk.religion.misc': 'religion',
+    }
+    to_generation_fmt = lambda x: GenerationTrainRecord(
+        input=x["text"], output=x["text_label"]
+    )
+
+    build_stream = lambda split: caikit.core.data_model.DataStream.from_iterable(
+        [to_generation_fmt(datum) for datum in dataset[split]]
+    )
+    dataset_for_task = datasets.load_dataset("SetFit/20_newsgroups", "20_newsgroups")
+    # Note: The data preprocessing (train, val and test) is copied from the Apache 2.0 code under
+    #       https://github.com/huggingface/peft/blob/main/examples/causal_language_modeling/peft_prompt_tuning_clm.ipynb
+
+    # Classes are ['Unlabeled', 'complaint', 'no complaint'] and given by integer => substitute int with NL label
+
+    if sample_size:
+        for part in ["train", "dev", "test"]:
+            if part in dataset_for_task:
+                dataset_for_task[part] = dataset_for_task[part].select(range(sample_size))
+
+
+    dataset = dataset_for_task.map(
+        lambda x: {"text_label": [map_labels[label] for label in x["label_text"]]},
+        batched=True,
+        num_proc=1,  # type: ignore
+    )
+
+
+    # This dataset has no validation data
+    train_stream = build_stream("train")
+    test_stream = build_stream("test")
+    print_colored(
+        "Warning: using train stream as validation; 20_newsgroup has no validation set!"
+    )
+    return (train_stream, train_stream, test_stream)
+
+
+
+def load_20_newsgroups_as_binary(class_name, sample_size=None,
+    get_test_set_as_eval=False,
+) -> Tuple[caikit.core.data_model.DataStream]:
+    """Load the ought/raft twitter complaints dataset.
+
+    Returns:
+        Tuple(caikit.core.data_model.DataStream)
+            DataStreams of GenerationTrainRecords to be leveraged for training, validation,
+            and testing, respectively.
+    """
+    map_labels = {
+        'alt.atheism': 'atheism',
+        'comp.graphics': 'computer graphics',
+        'comp.os.ms-windows.misc': 'microsoft windows',
+        'comp.sys.ibm.pc.hardware': 'pc hardware',
+        'comp.sys.mac.hardware': 'mac hardware',
+        'comp.windows.x': 'windows x',
+        'misc.forsale': 'for sale',
+        'rec.autos': 'cars',
+        'rec.motorcycles': 'motorcycles',
+        'rec.sport.baseball': 'baseball',
+        'rec.sport.hockey': 'hockey',
+        'sci.crypt': 'cryptography',
+        'sci.electronics': 'electronics',
+        'sci.med': 'medicine',
+        'sci.space': 'space',
+        'soc.religion.christian': 'christianity',
+        'talk.politics.guns': 'guns',
+        'talk.politics.mideast': 'middle east',
+        'talk.politics.misc': 'politics',
+        'talk.religion.misc': 'religion',
+    }
+    to_generation_fmt = lambda x: GenerationTrainRecord(
+        input=x["text"], output=x["text_label"]
+    )
+
+    build_stream = lambda split: caikit.core.data_model.DataStream.from_iterable(
+        [to_generation_fmt(datum) for datum in dataset[split]]
+    )
+    dataset_for_task = datasets.load_dataset("SetFit/20_newsgroups", "20_newsgroups")
+    # Note: The data preprocessing (train, val and test) is copied from the Apache 2.0 code under
+    #       https://github.com/huggingface/peft/blob/main/examples/causal_language_modeling/peft_prompt_tuning_clm.ipynb
+
+    # Classes are ['Unlabeled', 'complaint', 'no complaint'] and given by integer => substitute int with NL label
+
+    if sample_size:
+        for part in ["train", "dev", "test"]:
+            if part in dataset_for_task:
+                dataset_for_task[part] = dataset_for_task[part].select(range(sample_size))
+
+
+    dataset = dataset_for_task.map(
+        lambda x: {"text_label": ["yes" if map_labels[label] == class_name else "no" for label in x["label_text"]]},
+        batched=True,
+        num_proc=1,  # type: ignore
+    )
+
+
+    # This dataset has no validation data
+    train_stream = build_stream("train")
+    test_stream = build_stream("test")
+    print_colored(
+        "Warning: using train stream as validation; 20_newsgroup has no validation set!"
+    )
+    return (train_stream, train_stream, test_stream)
+
+
+
 def load_samsum_dataset() -> Tuple[caikit.core.data_model.DataStream]:
     """Load the samsum dataset."""
 
@@ -407,6 +599,47 @@ SUPPORTED_DATASETS = {
         dataset_loader=load_samsum_dataset,
         init_text="",
     ),
+
+    "20_newsgroups_small_binary_politics": DatasetInfo(
+        verbalizer=f'Classify if the following text belongs to the category politics. Answer yes or no.\ntext: ' + '{{input}}\nanswer:',
+        dataset_loader=partial(load_20_newsgroups_as_binary, class_name="politics", sample_size=200),
+        init_text="Classify if the following text belongs to the category politics. Answer yes or no.",
+    ),
+
+    "20_newsgroups": DatasetInfo(
+        verbalizer="{{input}}",
+        dataset_loader=load_20_newsgroups,
+        init_text="Classify sentiment for each of the news articles: ",
+    ),
+
+    "20_newsgroups_small_binary_politics_lmu_1": DatasetInfo(
+        verbalizer=f'Classify if the following text belongs to the category politics. Answer yes or no.\ntext: ' + '{{input}}\nanswer:',
+        dataset_loader=partial(load_dataset_lmu, train_json="20_newsgroup_data/1/train/data.json", test_csv="20_newsgroup_data/1/infer/predictions.csv", class_name="politics"),
+        init_text="Classify if the following text belongs to the category politics. Answer yes or no.",
+    ),
+
+    "20_newsgroups_small_binary_politics_lmu_2": DatasetInfo(
+        verbalizer=f'Classify if the following text belongs to the category politics. Answer yes or no.\ntext: ' + '{{input}}\nanswer:',
+        dataset_loader=partial(load_dataset_lmu, train_json="20_newsgroup_data/2/train/data.json",
+                               test_csv="20_newsgroup_data/2/infer/predictions.csv", class_name="politics"),
+        init_text="Classify if the following text belongs to the category politics. Answer yes or no.",
+    ),
+
+    "20_newsgroups_small_binary_politics_lmu_3": DatasetInfo(
+        verbalizer=f'Classify if the following text belongs to the category politics. Answer yes or no.\ntext: ' + '{{input}}\nanswer:',
+        dataset_loader=partial(load_dataset_lmu, train_json="20_newsgroup_data/3/train/data.json",
+                               test_csv="20_newsgroup_data/3/infer/predictions.csv", class_name="politics"),
+        init_text="Classify if the following text belongs to the category politics. Answer yes or no.",
+    ),
+
+    "20_newsgroups_small_binary_medicine_lmu_1": DatasetInfo(
+        verbalizer=f'Classify if the following text belongs to the category medicine. Answer yes or no.\ntext: ' + '{{input}}\nanswer:',
+        dataset_loader=partial(load_dataset_lmu_from_sample_step, train_csv="20_newsgroup_data/medicine_1/sample_dataset/53/a6bb2efa13/train.csv",
+                               test_csv="20_newsgroup_data/medicine_1/sample_dataset/73/6f2de09132/test.csv", class_name="medicine"),
+        init_text="'Classify if the following text belongs to the category medicine. Answer yes or no.'",
+    ),
+
+
 }
 
 # Supported metrics in huggingface's evaluate library.
@@ -415,6 +648,7 @@ METRIC_INFOS = [
     MetricInfo(metric_name="accuracy", convert_to_numeric=True),
     MetricInfo(metric_name="matthews_correlation", convert_to_numeric=True),
     MetricInfo(metric_name="rouge", convert_to_numeric=False),
+    MetricInfo(metric_name="f1", convert_to_numeric=True),
 ]
 SUPPORTED_METRICS = {
     metric_info.metric_name: get_wrapped_evaluate_metric(
