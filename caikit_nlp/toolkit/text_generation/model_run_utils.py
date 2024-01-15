@@ -281,7 +281,7 @@ def generate_text_func(
         generated_tokens = generate_out.sequences.cpu().numpy()[0, 1:].tolist()
         top_n_tokens = kwargs['kwargs'].get('top_n_tokens', None)
         if top_n_tokens is not None:
-            token_logprobs = [torch.nn.functional.log_softmax(tscores[0]).numpy() for tscores in generate_out.scores]
+            token_logprobs = [torch.nn.functional.log_softmax(lgits[0]).cpu().numpy() for lgits in generate_out.scores]
             top_tokens = [np.argsort(t_logprobs)[-top_n_tokens:] for t_logprobs in token_logprobs]
             generated_tokens = [{
                 'token': t,
