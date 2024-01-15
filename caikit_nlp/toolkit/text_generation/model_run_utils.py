@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple, Union
 # Third Party
 from peft.peft_model import PeftModel
 from transformers import AutoModel, AutoTokenizer, StoppingCriteria, TextStreamer
+from transformers.utils.generic import ModelOutput
 import numpy as np
 import torch
 
@@ -131,6 +132,12 @@ class SequenceStoppingCriteria(StoppingCriteria):
         yield self
 
 
+class GeneratedTextResultLocal:
+    def __init__(self, **kwargs) -> None:
+        for name, value in kwargs.items():
+            setattr(self, name, value)
+
+
 def generate_text_func(
     model: "Union[PeftModel, AutoModel]",
     tokenizer: "AutoTokenizer",
@@ -230,12 +237,16 @@ def generate_text_func(
         ).to(model.device)
 
     with torch.no_grad():
-        generate_ids = model.generate(
+        generate_out = model.generate(
             input_ids=inputs["input_ids"],
             **gen_optional_params,
             **kwargs,
         )
 
+    if isinstance(generate_out, ModelOutput):
+        generate_ids = generate_out.sequences
+    else:
+        generate_ids = generate_out
     token_count = generate_ids.size(1) - 1
 
     preds = [
@@ -264,14 +275,43 @@ def generate_text_func(
     else:
         finish_reason = FinishReason.MAX_TOKENS
 
-    return GeneratedTextResult(
-        generated_tokens=token_count,
-        generated_text=generated_text,
-        finish_reason=finish_reason,
-        producer_id=producer_id,
-        input_token_count=input_token_count,
-        seed=seed,
-    )
+    if isinstance(generate_out, ModelOutput):
+        # this function is invoked on a single text
+        generated_tokens = generate_out.sequences.numpy()[0, 1:].tolist()
+        top_n_tokens = kwargs['kwargs'].get('top_n_tokens', None)
+        if top_n_tokens is not None:
+            token_logprobs = [torch.nn.functional.log_softmax(tscores[0]).numpy() for tscores in generate_out.scores]
+            top_tokens = [np.argsort(t_logprobs)[-top_n_tokens:] for t_logprobs in token_logprobs]
+            generated_tokens = [{
+                'token': t,
+                'logprob': token_logprobs[i][t],
+                'top_tokens': [{
+                    'token': tt,
+                    'logprob': token_logprobs[i][tt],
+                } for tt in top_tokens[i]]
+            } for i, t in enumerate(generated_tokens)]
+
+        res = GeneratedTextResultLocal(
+            generated_tokens=generated_tokens,
+            generated_text=generated_text,
+            finish_reason=finish_reason,
+            producer_id=producer_id,
+            input_token_count=input_token_count,
+            seed=seed,
+            scores=generate_out.scores,
+            encoder_hidden_states=generate_out.encoder_hidden_states
+        )
+    else:
+        res = GeneratedTextResult(
+            generated_tokens=token_count,
+            generated_text=generated_text,
+            finish_reason=finish_reason,
+            producer_id=producer_id,
+            input_token_count=input_token_count,
+            seed=seed,
+        )
+
+    return res
 
 
 def __postprocess_remove_input_text(tokenizer, preds, inputs, task_type):
