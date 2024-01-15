@@ -276,9 +276,9 @@ def generate_text_func(
         finish_reason = FinishReason.MAX_TOKENS
 
     if isinstance(generate_out, ModelOutput):
-        # push marker 1
+        # push marker 2
         # this function is invoked on a single text
-        generated_tokens = generate_out.sequences.numpy()[0, 1:].tolist()
+        generated_tokens = generate_out.sequences.cpu().numpy()[0, 1:].tolist()
         top_n_tokens = kwargs['kwargs'].get('top_n_tokens', None)
         if top_n_tokens is not None:
             token_logprobs = [torch.nn.functional.log_softmax(tscores[0]).numpy() for tscores in generate_out.scores]
