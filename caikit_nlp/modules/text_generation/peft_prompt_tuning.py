@@ -171,6 +171,7 @@ class PeftPromptTuning(ModuleBase):
         stop_sequences: Optional[List[str]] = None,
         seed: Optional[np.uint64] = None,
         preserve_input_text: bool = True,
+        **kwargs
     ) -> GeneratedTextResult:
         f"""
         Run the full text generation model.
@@ -208,6 +209,7 @@ class PeftPromptTuning(ModuleBase):
             stop_sequences=stop_sequences,
             preserve_input_text=preserve_input_text,
             task_type=self.task_type,
+            **kwargs
         )
 
     # NOTE: We need to disable wip decorator here otherwise we get issues in
